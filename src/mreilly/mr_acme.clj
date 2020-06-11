@@ -1,66 +1,26 @@
 (ns mreilly.mr-acme
-  (:require [clojure.java [io :as io]]
+  (:require [clojure.data.json :as json]
+            [clojure.java.io :as io]
             [clojure.java.shell :refer [sh with-sh-dir]]
-            [clojure.string :as str]
-            [clojure.data.json :as json])
-  (:import
-   [java.net URL]
-   [java.nio.file Files OpenOption Paths StandardCopyOption]
-   [java.nio ByteBuffer]
-   [java.nio.charset StandardCharsets]
-   [java.util Base64]
-   [java.security MessageDigest KeyStore KeyPair KeyPairGenerator
-    KeyStore$PasswordProtection
-    Signature
-    Security]
-   [org.apache.http.impl.client HttpClients]
-   [org.apache.http.client.methods HttpGet HttpHead HttpPost]
-   [org.apache.http.util EntityUtils]
-   [org.apache.http.entity StringEntity]))
-
-(defn base64[src]
-  (let [encoded (.encode (.withoutPadding (Base64/getUrlEncoder)) src)
-        bytes (if (instance? ByteBuffer encoded)
-                (.array encoded)
-                encoded)]
-    (String. bytes
-             StandardCharsets/ISO_8859_1)))
-
-(defn string-to-base64[str]
-  (let [bytes (.getBytes str StandardCharsets/UTF_8)]
-    (base64 bytes)))
-
-(defn big-int-to-base64[big-int]
-  (base64 (let [array  (.toByteArray big-int)]
-               (if (zero? (aget array 0))
-                 (ByteBuffer/wrap array 1 (dec (alength array)))
-                 array))))
-
-
-(defn to-json-web-key[key]
-  (sorted-map 
-   "e" (big-int-to-base64 (.getPublicExponent key))
-   "kty" "RSA"
-   "n" (big-int-to-base64 (.getModulus key))))
-
-(defn gen-key-pair[]
-  (let [keyGen (KeyPairGenerator/getInstance "RSA")]
-    (.initialize keyGen 4096)
-    (.genKeyPair keyGen)))
-
-(defn get-path [first & rest]
-  (Paths/get first
-             (into-array String rest)))
-
-(defn new-buffered-writer [path & options]
-  (Files/newBufferedWriter path
-             (into-array OpenOption options)))
-
-(defn copy-file [source-path dest-path]
-  (io/copy (io/file source-path) (io/file dest-path)))
+            [clojure.string :as str])
+  (:import java.net.URL
+           java.nio.ByteBuffer
+           java.nio.charset.StandardCharsets
+           [java.nio.file Files OpenOption Paths StandardCopyOption]
+           [java.security KeyPair KeyStore MessageDigest Signature]
+           java.util.Base64
+           [org.apache.http.client.methods HttpGet HttpHead HttpPost]
+           org.apache.http.entity.StringEntity
+           org.apache.http.impl.client.HttpClients
+           org.apache.http.util.EntityUtils))
 
 (defn delete-file [path]
   (Files/deleteIfExists path))
+
+(defn get-path [first & rest]
+  (Paths/get
+   first
+   (into-array String rest)))
 
 (defn create-key-store[]
   (let [dir "/home/mreilly/wa/mr-acme/pg3"
@@ -74,13 +34,63 @@
       (sh
        "keytool" "-genkeypair" "-storepass" "changeit" "-keyalg" "rsa" "-keystore" fname "-dname" "CN=Michael, OU=unknown, O=unknown, L=unknown, ST=unknown, C=unknown" "-keysize" "4096" "-alias" domain-alias "-keypass" "changeit"))))
 
+(defn get-csr
+  [dir fname domain-alias]
+  (with-sh-dir dir    
+    (let [{:keys [out]} (sh "keytool" "-certreq" "-storepass" "changeit"
+                            "-keystore" fname "-alias" domain-alias
+                            "-ext" "SAN=dns:mr.quaxt.ie" "-keypass" "changeit")
+          lines (into [] (.split out "\n"))
+          lines (subvec lines 1 (-> lines count (- 1)))
+          csr-pem-without-boundary (str/join "\n" lines)]
+      (.decode  (Base64/getMimeDecoder) csr-pem-without-boundary))))
+
+(defn get-key-pair
+  [keystore alias password] 
+  (let[ key (.getKey  keystore alias (.toCharArray password))
+       cert (.getCertificate keystore alias)
+       publicKey (.getPublicKey cert)]
+    (KeyPair. publicKey key)))
+
+(defn load-key-store
+  [ keystoreFile
+   password ]
+  (let [keystoreUri  (.toUri keystoreFile)
+        keystoreUrl  (.toURL keystoreUri)
+        keystore  (KeyStore/getInstance (KeyStore/getDefaultType))]
+    (with-open [is  (.openStream keystoreUrl)]
+      (.load keystore is (when password  (.toCharArray password))))
+    keystore))
+
+(defn get-path [first & rest]
+  (Paths/get first
+             (into-array String rest)))
+
+(defn base64[src]
+  (let [encoded (.encode (.withoutPadding (Base64/getUrlEncoder)) src)
+        bytes (if (instance? ByteBuffer encoded)
+                (.array encoded)
+                encoded)]
+    (String. bytes
+             StandardCharsets/ISO_8859_1)))
+
+(defn big-int-to-base64[big-int]
+  (base64 (let [array  (.toByteArray big-int)]
+            (if (zero? (aget array 0))
+              (ByteBuffer/wrap array 1 (dec (alength array)))
+              array))))
+
+(defn to-json-web-key[key]
+  (sorted-map 
+   "e" (big-int-to-base64 (.getPublicExponent key))
+   "kty" "RSA"
+   "n" (big-int-to-base64 (.getModulus key))))
 
 (defn set-headers[request headers]
   (doseq [[name value] headers]
     (.setHeader request name value)))
 
 (defn curl[{:keys [url method body headers] :or {method :get}}]
-  (println "url=" url)
   (let [http-client (HttpClients/createDefault)
         request  (case method
                    :head (HttpHead. url)
@@ -102,6 +112,10 @@
         entity (.getEntity response)]
     (if entity (assoc cooked :body (EntityUtils/toString (.getEntity response)))
         cooked)))
+
+(defn string-to-base64[str]
+  (let [bytes (.getBytes str StandardCharsets/UTF_8)]
+    (base64 bytes)))
 
 (defn sign[data key]
   (let [sig  (Signature/getInstance "SHA256withRSA")]
@@ -136,10 +150,7 @@
            :headers {"Accept-Language" "en",
                      "Content-Type" "application/jose+json"}})))
 
-(defn- bad-nonce [cnt]
-  (println "bad nonce retry " cnt))
-
-(defn- bad-nonce? [response]
+(defn bad-nonce? [response]
   (and
    (= 400
       (:status-code response))
@@ -152,48 +163,18 @@
   (loop [cnt 0]
     (let [response (raw-send-signed-request request)]
       (if (and (< cnt 100) (bad-nonce? response))
-        (do
-          (bad-nonce cnt)
-          (recur (inc cnt)))
+        (recur (inc cnt))
         response))))
 
-(defn create-account[]
-  (let [dir (json/read-str (:body (curl {:url "https://pebble:14000/dir"})))
-        new-account-url (get dir "newAccount")
-        new-nonce (get dir "newNonce")
-        nonce-resp (curl {:url new-nonce :method :head})
-        nonce (get-in nonce-resp [:headers "Replay-Nonce"])]
-    (send-signed-request {:url new-account-url
-                          :dir dir
-                          :method :post
-                          :body "{\"not\":  \"valid body\"}"
-                          :headers
-                          {"Accept-Language" "en",
-                           "Content-Type" "application/jose+json"}})))
-
-(defn get-key-pair
-  [keystore alias password] 
-  (let[ key (.getKey  keystore alias (.toCharArray password))
-       cert (.getCertificate keystore alias)
-       publicKey (.getPublicKey cert)]
-    (KeyPair. publicKey key)))
-
-(defn load-key-store
-  [ keystoreFile
-   password ]
-  (let [keystoreUri  (.toUri keystoreFile)
-        keystoreUrl  (.toURL keystoreUri)
-        keystore  (KeyStore/getInstance (KeyStore/getDefaultType))]
-(with-open [is  (.openStream keystoreUrl)]
-    (.load keystore is (when password  (.toCharArray password))))
-      keystore))
-
-(defn hexify "Convert byte sequence to hex string" [coll]
-  (let [hex [\0 \1 \2 \3 \4 \5 \6 \7 \8 \9 \a \b \c \d \e \f]]
-      (letfn [(hexify-byte [b]
-        (let [v (bit-and b 0xFF)]
-          [(hex (bit-shift-right v 4)) (hex (bit-and v 0x0F))]))]
-        (apply str (mapcat hexify-byte coll)))))
+(defn new-account
+  [private-key directory reg-payload jwk]
+  (send-signed-request
+   {:private-key private-key
+    :url (directory "newAccount")
+    :dir directory
+    :payload reg-payload
+    :alg "RS256"
+    :jwk jwk}))
 
 (defn update-contact
   "the headers passed in here will be the ones returned in the new-account request"
@@ -206,16 +187,6 @@
                     :payload  {"contact" contact}
                     :alg "RS256"
                     :jwk jwk}))
-
-(defn new-account
-  [private-key directory reg-payload jwk]
-  (send-signed-request
-   {:private-key private-key
-    :url (directory "newAccount")
-    :dir directory
-    :payload reg-payload
-    :alg "RS256"
-    :jwk jwk}))
 
 (defn new-order
   [headers private-key directory domains jwk]
@@ -254,6 +225,10 @@
     (MessageDigest/getInstance "SHA-256") 
     (.getBytes  (json/write-str jwk)
                 StandardCharsets/UTF_8))))
+
+(defn new-buffered-writer [path & options]
+  (Files/newBufferedWriter path
+             (into-array OpenOption options)))
 
 (defn do-until [pred task]
   (let [ret  (task)]
@@ -303,85 +278,64 @@
              :alg "RS256"
              :jwk jwk}))))
 
-(defn get-csr
-  [dir fname domain-alias]
-  (with-sh-dir dir    
-    (let [{:keys [out]} (sh "keytool" "-certreq" "-storepass" "changeit"
-                            "-keystore" fname "-alias" domain-alias
-                            "-ext" "SAN=dns:mr.quaxt.ie" "-keypass" "changeit")
-          lines (into [] (.split out "\n"))
-          lines (subvec lines 1 (-> lines count (- 1)))
-          csr-pem-without-boundary (str/join "\n" lines)]
-      (.decode  (Base64/getMimeDecoder) csr-pem-without-boundary))))
-
-(def xxx (let [contact ["mailto:bogus@test.com"]
-               domains ["mr.quaxt.ie"]
-               csr (get-csr  "/home/mreilly/wa/mr-acme/pg3"
-                             "keystore.p12"
-                             "domain-key")
-               well-known-dir "/var/www/challenges/"
-               private-key (.getPrivate
-                            (get-key-pair 
-                             (load-key-store
-                              (get-path "/home/mreilly/wa/mr-acme/pg3/keystore.p12")
-                              "changeit")
-                             "account-key" "changeit"))
-               jwk (to-json-web-key private-key)
-               directory-url "https://pebble:14000/dir"
-               directory (-> (curl {:url directory-url})
-                             :body
-                             json/read-str)
-               _ (println "Directory found!")
-               _ (println "Registering account...")
-               reg-payload  {"termsOfServiceAgreed" true}
-               account (new-account private-key directory reg-payload jwk)
-               account-headers (:headers account)
-               _ (println (if (= 201 (:status-code account))
-                            "Registered!"
-                            "Already registered!"))
-               account (if contact
-                         (update-contact account-headers jwk directory contact private-key)
-                         account)
-               _ (println "Creating new order...")
-               order-resp (new-order account-headers private-key directory domains jwk)
-               _ (println "Order created!")
-               order (json/read-str (:body order-resp))
-               authorizations (get-authorizations account-headers private-key directory jwk order)
-               thumbprint (get-thumbprint jwk)
-               validations (doall (map (fn[authorization]
-                                         (validate
-                                          authorization thumbprint jwk
-                                          well-known-dir account-headers
-                                          private-key directory)) authorizations))
-               _ (println "validation done")
-               finalize-resp (send-signed-request
-                   {:account-headers account-headers
-                    :private-key private-key
-                    :url (order "finalize")
-                    :dir directory
-                    :payload  {"csr" (base64 csr)}
-                    :alg "RS256"
-                    :jwk jwk})
-               order (do-until #(-> % :body json/read-str #{"pending", "processing"} not)
-                   #(send-signed-request
-                   {:account-headers account-headers
-                    :private-key private-key
-                    :url (get-in order-resp [:headers "Location"])
-                    :dir directory
-                    :alg "RS256"
-                    :jwk jwk}))]
-           ;; now send csr and poll until cert arrives
-
-           
-
-           (let [certificate-response
-                 (send-signed-request
-                  {:account-headers account-headers
-                   :private-key private-key
-                   :url (-> order :body json/read-str (get "certificate"))
-                   :dir directory
-                   :alg "RS256"
-                   :jwk jwk})]
-             certificate-response)))
-;; => #'mreilly.mr-acme/xxx
-xxx
+(let [contact ["mailto:bogus@test.com"]
+      domains ["mr.quaxt.ie"]
+      csr (get-csr  "/home/mreilly/wa/mr-acme/pg3"
+                    "keystore.p12"
+                    "domain-key")
+      well-known-dir "/var/www/challenges/"
+      private-key (.getPrivate
+                   (get-key-pair 
+                    (load-key-store
+                     (get-path "/home/mreilly/wa/mr-acme/pg3/keystore.p12")
+                     "changeit")
+                    "account-key" "changeit"))
+      jwk (to-json-web-key private-key)
+      directory-url "https://pebble:14000/dir"
+      directory (-> (curl {:url directory-url})
+                    :body
+                    json/read-str)
+      reg-payload  {"termsOfServiceAgreed" true}
+      account (new-account private-key directory reg-payload jwk)
+      account-headers (:headers account)
+      _ (println (if (= 201 (:status-code account))
+                   "Registered!"
+                   "Already registered!"))
+      account (if contact
+                (update-contact account-headers jwk directory contact private-key)
+                account)
+      
+      order-resp (new-order account-headers private-key directory domains jwk)
+      
+      order (json/read-str (:body order-resp))
+      authorizations (get-authorizations account-headers private-key directory jwk order)
+      thumbprint (get-thumbprint jwk)
+      validations (doall (map (fn[authorization]
+                                (validate
+                                 authorization thumbprint jwk
+                                 well-known-dir account-headers
+                                 private-key directory)) authorizations))
+      _ (println "validation done")
+      finalize-resp (send-signed-request
+                     {:account-headers account-headers
+                      :private-key private-key
+                      :url (order "finalize")
+                      :dir directory
+                      :payload  {"csr" (base64 csr)}
+                      :alg "RS256"
+                      :jwk jwk})
+      order (do-until #(-> % :body json/read-str #{"pending", "processing"} not)
+                      #(send-signed-request
+                        {:account-headers account-headers
+                         :private-key private-key
+                         :url (get-in order-resp [:headers "Location"])
+                         :dir directory
+                         :alg "RS256"
+                         :jwk jwk}))]
+  (send-signed-request
+   {:account-headers account-headers
+    :private-key private-key
+    :url (-> order :body json/read-str (get "certificate"))
+    :dir directory
+    :alg "RS256"
+    :jwk jwk}))
