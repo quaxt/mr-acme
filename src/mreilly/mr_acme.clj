@@ -10,7 +10,6 @@
    [java.nio.charset StandardCharsets]
    [java.util Base64]
    [java.security MessageDigest KeyStore KeyPair KeyPairGenerator
-    PKCS10
     KeyStore$PasswordProtection
     Signature
     Security]
@@ -19,7 +18,7 @@
    [org.apache.http.util EntityUtils]
    [org.apache.http.entity StringEntity]))
 
-(defn to-base64[src]
+(defn base64[src]
   (let [encoded (.encode (.withoutPadding (Base64/getUrlEncoder)) src)
         bytes (if (instance? ByteBuffer encoded)
                 (.array encoded)
@@ -29,10 +28,10 @@
 
 (defn string-to-base64[str]
   (let [bytes (.getBytes str StandardCharsets/UTF_8)]
-    (to-base64 bytes)))
+    (base64 bytes)))
 
 (defn big-int-to-base64[big-int]
-  (to-base64 (let [array  (.toByteArray big-int)]
+  (base64 (let [array  (.toByteArray big-int)]
                (if (zero? (aget array 0))
                  (ByteBuffer/wrap array 1 (dec (alength array)))
                  array))))
@@ -75,13 +74,6 @@
       (sh
        "keytool" "-genkeypair" "-storepass" "changeit" "-keyalg" "rsa" "-keystore" fname "-dname" "CN=Michael, OU=unknown, O=unknown, L=unknown, ST=unknown, C=unknown" "-keysize" "4096" "-alias" domain-alias "-keypass" "changeit"))))
 
-(defn get-csr
-  [dir
-   fname
-   account-alias
-   domain-alias]
-  (with-sh-dir dir    
-    (sh "keytool" "-certreq" "-storepass" "changeit" "-keystore" fname "-alias" domain-alias "-ext" "SAN=dns:mr.quaxt.ie" "-keypass" "changeit")))
 
 (defn set-headers[request headers]
   (doseq [[name value] headers]
@@ -138,7 +130,7 @@
         data (json/write-str
               {"protected" protected64
                "payload" payload64
-               "signature" (to-base64 out)})]
+               "signature" (base64 out)})]
     (curl {:url url :method :post
            :body data
            :headers {"Accept-Language" "en",
@@ -257,7 +249,7 @@
   "the computation specified in
    [RFC7638], using the SHA-256 digest [FIPS180-4]."
   [jwk]
-  (to-base64 
+  (base64 
    (.digest 
     (MessageDigest/getInstance "SHA-256") 
     (.getBytes  (json/write-str jwk)
@@ -311,8 +303,22 @@
              :alg "RS256"
              :jwk jwk}))))
 
+(defn get-csr
+  [dir fname domain-alias]
+  (with-sh-dir dir    
+    (let [{:keys [out]} (sh "keytool" "-certreq" "-storepass" "changeit"
+                            "-keystore" fname "-alias" domain-alias
+                            "-ext" "SAN=dns:mr.quaxt.ie" "-keypass" "changeit")
+          lines (into [] (.split out "\n"))
+          lines (subvec lines 1 (-> lines count (- 1)))
+          csr-pem-without-boundary (str/join "\n" lines)]
+      (.decode  (Base64/getMimeDecoder) csr-pem-without-boundary))))
+
 (def xxx (let [contact ["mailto:bogus@test.com"]
                domains ["mr.quaxt.ie"]
+               csr (get-csr  "/home/mreilly/wa/mr-acme/pg3"
+                             "keystore.p12"
+                             "domain-key")
                well-known-dir "/var/www/challenges/"
                private-key (.getPrivate
                             (get-key-pair 
@@ -347,43 +353,35 @@
                                           authorization thumbprint jwk
                                           well-known-dir account-headers
                                           private-key directory)) authorizations))
-               _ (println "validation done")]
-      ;; now send csr and poll until cert arrives     
-           validations))
+               _ (println "validation done")
+               finalize-resp (send-signed-request
+                   {:account-headers account-headers
+                    :private-key private-key
+                    :url (order "finalize")
+                    :dir directory
+                    :payload  {"csr" (base64 csr)}
+                    :alg "RS256"
+                    :jwk jwk})
+               order (do-until #(-> % :body json/read-str #{"pending", "processing"} not)
+                   #(send-signed-request
+                   {:account-headers account-headers
+                    :private-key private-key
+                    :url (get-in order-resp [:headers "Location"])
+                    :dir directory
+                    :alg "RS256"
+                    :jwk jwk}))]
+           ;; now send csr and poll until cert arrives
+
+           
+
+           (let [certificate-response
+                 (send-signed-request
+                  {:account-headers account-headers
+                   :private-key private-key
+                   :url (-> order :body json/read-str (get "certificate"))
+                   :dir directory
+                   :alg "RS256"
+                   :jwk jwk})]
+             certificate-response)))
 ;; => #'mreilly.mr-acme/xxx
 xxx
-
-
-
-
-
-(defn make-csr[domain-key-pair]
-  (let[
-       CN  "Mr Foo"
-       OU  "Foo Department"
-       O  "Foo Ltd."
-       L  "Foosville"
-       S  "Foouisiana"
-       C  "GB"
-       pkcs10 (PKCS10. (.getPublic domain-key-pair))
-       signature  (doto (Signature/getInstance "SHA1WithRSA")
-                    (.initSign (.getPrivate domain-key-pair))) 
-       
-       x500Name  (X500Name. CN, OU, O, L, S, C)]
-    (.encodeAndSign pkcs10 (X500Signer. signature, x500Name))
-    (with-open [bs (ByteArrayOutputStream.)
-                ps (PrintStream. bs)]
-      (.print pkcs10 ps)
-      (.toByteArray bs))))
-
-
-(make-csr (get-key-pair
-           (load-key-store
-                              (get-path "/home/mreilly/wa/mr-acme/pg3/keystore.p12")
-                              "changeit")
-                             "domain-key" "changeit"))
-
-
-(get-csr [ "/home/mreilly/wa/mr-acme/pg3"
-          "keystore.p12"
-          "domain-key"])
