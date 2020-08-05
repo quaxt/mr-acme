@@ -36,7 +36,7 @@
 
 (defn get-csr
   [dir fname domain-alias]
-  (with-sh-dir dir    
+  (with-sh-dir dir
     (let [{:keys [out]} (sh "keytool" "-certreq" "-storepass" "changeit"
                             "-keystore" fname "-alias" domain-alias
                             "-ext" "SAN=dns:mr.quaxt.ie" "-keypass" "changeit")
@@ -46,7 +46,7 @@
       (.decode  (Base64/getMimeDecoder) csr-pem-without-boundary))))
 
 (defn get-key-pair
-  [keystore alias password] 
+  [keystore alias password]
   (let[ key (.getKey  keystore alias (.toCharArray password))
        cert (.getCertificate keystore alias)
        publicKey (.getPublicKey cert)]
@@ -81,7 +81,7 @@
               array))))
 
 (defn to-json-web-key[key]
-  (sorted-map 
+  (sorted-map
    "e" (big-int-to-base64 (.getPublicExponent key))
    "kty" "RSA"
    "n" (big-int-to-base64 (.getModulus key))))
@@ -106,7 +106,7 @@
                            (areduce xs i ret (array-map)
                                     (let [header (aget xs i)]
                                       (assoc ret (.getName header) (.getValue header)))))
-                
+
                 :reason (.getReasonPhrase status-line)
                 :status-code (.getStatusCode status-line)}
         entity (.getEntity response)]
@@ -126,7 +126,7 @@
 (defn raw-send-signed-request [{:keys [url payload err-msg dir
                                    private-key alg account-headers jwk]
                             :or {depth 0}}]
-  
+
   (let [payload64 (if payload
                     (string-to-base64 (json/write-str payload))
                     "")
@@ -134,7 +134,7 @@
                        (get-in [:headers "Replay-Nonce"]))
         protected  {"url" url, "alg" alg, "nonce" new-nonce}
         protected (merge protected
-                         (if account-headers 
+                         (if account-headers
                            {"kid" (account-headers "Location")}
                            {"jwk" jwk}))
         protected64 (string-to-base64 (json/write-str protected))
@@ -220,9 +220,9 @@
   "the computation specified in
    [RFC7638], using the SHA-256 digest [FIPS180-4]."
   [jwk]
-  (base64 
-   (.digest 
-    (MessageDigest/getInstance "SHA-256") 
+  (base64
+   (.digest
+    (MessageDigest/getInstance "SHA-256")
     (.getBytes  (json/write-str jwk)
                 StandardCharsets/UTF_8))))
 
@@ -250,10 +250,10 @@
                        first)
         token (challenge "token")
         challenge-url (challenge "url")]
-    (spit 
-     (new-buffered-writer 
-      (get-path well-known-dir token)) 
-     (str token \. 
+    (spit
+     (new-buffered-writer
+      (get-path well-known-dir token))
+     (str token \.
           (get-thumbprint jwk)))
     (send-signed-request
             {:account-headers account-headers
@@ -285,7 +285,7 @@
                     "domain-key")
       well-known-dir "/var/www/challenges/"
       private-key (.getPrivate
-                   (get-key-pair 
+                   (get-key-pair
                     (load-key-store
                      (get-path "/home/mreilly/wa/mr-acme/pg3/keystore.p12")
                      "changeit")
@@ -304,9 +304,9 @@
       account (if contact
                 (update-contact account-headers jwk directory contact private-key)
                 account)
-      
+
       order-resp (new-order account-headers private-key directory domains jwk)
-      
+
       order (json/read-str (:body order-resp))
       authorizations (get-authorizations account-headers private-key directory jwk order)
       thumbprint (get-thumbprint jwk)
