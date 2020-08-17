@@ -398,4 +398,4 @@
 
 ;;(do-everything)
 
-(defn create-hello-fn [] (fn [] "hello"))
+(defn create-hello-fn [mr-acme] (.howdy mr-acme))
