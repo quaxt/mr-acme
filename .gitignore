@@ -1,11 +1,3 @@
-/target
-/classes
-/checkouts
-*.jar
-*.class
-/.cpcache
-/.lein-*
-/.nrepl-history
-/.nrepl-port
-.hgignore
-.hg/
+target/*
+.idea/*
+*.iml

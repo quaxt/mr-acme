@@ -1,4 +1,4 @@
-(ns mreilly.mr-acme
+(ns mr-acme
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.java.shell :refer [sh with-sh-dir]]
@@ -12,8 +12,7 @@
            [org.apache.http.client.methods HttpGet HttpHead HttpPost]
            org.apache.http.entity.StringEntity
            org.apache.http.impl.client.HttpClients
-           org.apache.http.util.EntityUtils
-           mreilly.MrAcme))
+           org.apache.http.util.EntityUtils))
 
 (defn delete-file [path]
   (Files/deleteIfExists path))
@@ -397,4 +396,6 @@
       :alg "RS256"
       :jwk jwk})))
 
-(do-everything)
+;;(do-everything)
+
+(defn create-hello-fn [] (fn [] "hello"))
