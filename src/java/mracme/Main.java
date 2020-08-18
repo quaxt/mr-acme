@@ -31,7 +31,11 @@ public class Main {
 
     public static void main(String[] args) throws Exception {
         // Clojure fns are callable
-        IFn fn = getFn("mr-acme", "do-everything" );
-        System.out.println("fn says " + fn.invoke(R53.INSTANCE, "mailto:mreilly@munichre.digital", "api.ais-dev.mreilly.munichre.cloud", "/home/mreilly/wa/mr-acme/pg3/keystore.p12"));
+        IFn fn = getFn("mr-acme", "do-everything");
+        System.out.println(fn.invoke(R53.INSTANCE,
+                                     args[0], //"mailto:mreilly@munichre.digital",
+                                     args[1], //"api.ais-dev.mreilly.munichre.cloud",
+                                     args[2] //"/home/mreilly/wa/mr-acme/pg3/keystore.p12"
+                                     ));
     }
 }

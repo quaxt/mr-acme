@@ -22,26 +22,20 @@
    first
    (into-array String rest)))
 
-;; user=> (.getName (get-path "a" "b") 0)
-;; #object[sun.nio.fs.WindowsPath 0x6315e94c "a"]
-;; user=> (.getFileName (get-path "a" "b"))
-;; #object[sun.nio.fs.WindowsPath 0x49ea278d "b"]
-;; user=> (.getParent (get-path "a" "b"))
-;; #object[sun.nio.fs.WindowsPath 0x2f3c188c "a"]
-;; user=>
-
-
 (defn create-key-store[trust-store-path domain-name]
   (let [dir (.toString (.getParent trust-store-path))
         fname (.toString (.getFileName trust-store-path))
         account-alias "account-key"
-        domain-alias  "domain-key"]
-    (delete-file (get-path dir fname))
+        domain-alias  "domain-key"
+        cn (str "CN=" domain-name ", OU=unknown, O=unknown, L=unknown, ST=unknown, C=unknown")]
+    (delete-file trust-store-path)
     (with-sh-dir dir
       (sh
-       "keytool" "-genkeypair" "-storepass" "changeit" "-keyalg" "rsa" "-keystore" fname "-dname" "CN=" domain-name ", OU=unknown, O=unknown, L=unknown, ST=unknown, C=unknown" "-keysize" "4096" "-alias" account-alias "-keypass" "changeit")
+       "keytool" "-genkeypair" "-storepass" "changeit" "-keyalg" "rsa" "-keystore" fname "-dname" cn
+       "-keysize" "4096" "-alias" account-alias "-keypass" "changeit")
       (sh
-       "keytool" "-genkeypair" "-storepass" "changeit" "-keyalg" "rsa" "-keystore" fname "-dname" "CN=" domain-name ", OU=unknown, O=unknown, L=unknown, ST=unknown, C=unknown" "-keysize" "4096" "-alias" domain-alias "-keypass" "changeit"))))
+       "keytool" "-genkeypair" "-storepass" "changeit" "-keyalg" "rsa" "-keystore" fname "-dname" cn
+       "-keysize" "4096" "-alias" domain-alias "-keypass" "changeit"))))
 
 (defn get-csr
   [trust-store-path domain-alias domain-name]
@@ -290,13 +284,13 @@
              :alg "RS256"
              :jwk jwk}))))
 
-(defn update-txt-record[dns-name txt-value]
+(defn update-txt-record[r53 dns-name txt-value]
   (let [change-id (.upsertTxtRecord r53 dns-name txt-value)]
     (.waitForChange r53 change-id)))
 
 (defn validate-dns
   "satisfy dns challenge for the authorization"
-  [authorization thumbprint jwk well-known-dir account-headers private-key directory]
+  [r53 authorization thumbprint jwk well-known-dir account-headers private-key directory]
   (let [authorization-url (:authorization-url authorization)
         authorization (-> authorization  :body
                           json/read-str)
@@ -314,9 +308,8 @@
     ;; from the "token" value provided in the challenge and the client's
     ;; account key.  The client then computes the SHA-256 digest [FIPS180-4]
     ;; of the key authorization.
-    (update-txt-record (str "_acme-challenge." domain-name)
+    (update-txt-record r53 (str "_acme-challenge." domain-name)
                        (base64 (sha-256 key-authorization)))
-    ;; wait for dns propogation
     (send-signed-request
             {:account-headers account-headers
              :private-key private-key
@@ -340,16 +333,12 @@
              :alg "RS256"
              :jwk jwk}))))
 
-
-
-
-
-(defn do-everything[r53 contact-email domain trust-store-filename]
+(defn do-everything[r53 contact-email domain-name trust-store-filename]
   (let [contacts [contact-email]
-        domains [domain]
-        trust-store-path (get-path trust-store-filename)
+        domains [domain-name]
+        trust-store-path (.toAbsolutePath (get-path trust-store-filename))
         _ (create-key-store trust-store-path domain-name)
-        csr (get-csr  trust-store-path 
+        csr (get-csr  trust-store-path
                       "domain-key"
                       domain-name)
         well-known-dir "/var/www/challenges/"
@@ -381,7 +370,7 @@
         thumbprint (get-thumbprint jwk)
 
         validations (doall (map (fn[authorization]
-                                  (validate-dns
+                                  (validate-dns r53
                                    authorization thumbprint jwk
                                    well-known-dir account-headers
                                    private-key directory)) authorizations))
@@ -402,14 +391,10 @@
                            :dir directory
                            :alg "RS256"
                            :jwk jwk}))]
-    (send-signed-request
+    (json/write-str (send-signed-request
      {:account-headers account-headers
       :private-key private-key
       :url (-> order :body json/read-str (get "certificate"))
       :dir directory
       :alg "RS256"
-      :jwk jwk})))
-
-;;(do-everything)
-
-
+      :jwk jwk}))))

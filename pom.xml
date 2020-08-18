@@ -33,10 +33,10 @@
       <artifactId>route53</artifactId>
     </dependency>
   </dependencies>  
-  <version>0.0</version>  
+  <version>0.1</version>  
   <groupId>example</groupId>  
-  <name>clojure-from-java</name>  
-  <artifactId>clojure-from-java</artifactId>  
+  <name>mr-acme</name>  
+  <artifactId>mr-acme</artifactId>  
   <properties>   
   <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>  </properties>  
   <modelVersion>4.0.0</modelVersion>  
@@ -91,7 +91,7 @@
 	  <archive>
 	    <manifest>
 	      <addClasspath>true</addClasspath>
-              <mainClass>example.Main</mainClass>
+              <mainClass>mracme.Main</mainClass>
 	    </manifest>
 	  </archive>
 	</configuration>
