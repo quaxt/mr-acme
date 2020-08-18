@@ -28,10 +28,10 @@ public class Main {
 
         return Clojure.var(ns, fn);
     }
-    
+
     public static void main(String[] args) throws Exception {
         // Clojure fns are callable
-        IFn fn = getFn("mr-acme", "create-hello-fn");
-        System.out.println("fn says " + fn.invoke(new Main()));
+        IFn fn = getFn("mr-acme", "do-everything" );
+        System.out.println("fn says " + fn.invoke(R53.INSTANCE, "mailto:mreilly@munichre.digital", "api.ais-dev.mreilly.munichre.cloud", "/home/mreilly/wa/mr-acme/pg3/keystore.p12"));
     }
 }

@@ -22,36 +22,49 @@
    first
    (into-array String rest)))
 
-(defn create-key-store[dir fname]
-  (let [account-alias "account-key"
+;; user=> (.getName (get-path "a" "b") 0)
+;; #object[sun.nio.fs.WindowsPath 0x6315e94c "a"]
+;; user=> (.getFileName (get-path "a" "b"))
+;; #object[sun.nio.fs.WindowsPath 0x49ea278d "b"]
+;; user=> (.getParent (get-path "a" "b"))
+;; #object[sun.nio.fs.WindowsPath 0x2f3c188c "a"]
+;; user=>
+
+
+(defn create-key-store[trust-store-path domain-name]
+  (let [dir (.toString (.getParent trust-store-path))
+        fname (.toString (.getFileName trust-store-path))
+        account-alias "account-key"
         domain-alias  "domain-key"]
     (delete-file (get-path dir fname))
     (with-sh-dir dir
       (sh
-       "keytool" "-genkeypair" "-storepass" "changeit" "-keyalg" "rsa" "-keystore" fname "-dname" "CN=api.ais-dev.mreilly.munichre.cloud, OU=unknown, O=unknown, L=unknown, ST=unknown, C=unknown" "-keysize" "4096" "-alias" account-alias "-keypass" "changeit")
+       "keytool" "-genkeypair" "-storepass" "changeit" "-keyalg" "rsa" "-keystore" fname "-dname" "CN=" domain-name ", OU=unknown, O=unknown, L=unknown, ST=unknown, C=unknown" "-keysize" "4096" "-alias" account-alias "-keypass" "changeit")
       (sh
-       "keytool" "-genkeypair" "-storepass" "changeit" "-keyalg" "rsa" "-keystore" fname "-dname" "CN=api.ais-dev.mreilly.munichre.cloud, OU=unknown, O=unknown, L=unknown, ST=unknown, C=unknown" "-keysize" "4096" "-alias" domain-alias "-keypass" "changeit"))))
+       "keytool" "-genkeypair" "-storepass" "changeit" "-keyalg" "rsa" "-keystore" fname "-dname" "CN=" domain-name ", OU=unknown, O=unknown, L=unknown, ST=unknown, C=unknown" "-keysize" "4096" "-alias" domain-alias "-keypass" "changeit"))))
 
 (defn get-csr
-  [dir fname domain-alias]
-  (with-sh-dir dir
-    (let [{:keys [out]} (sh "keytool" "-certreq" "-storepass" "changeit"
-                            "-keystore" fname "-alias" domain-alias
-                            "-ext" "SAN=dns:api.ais-dev.mreilly.munichre.cloud" "-keypass" "changeit")
-          lines (into [] (.split out "\n"))
-          lines (subvec lines 1 (-> lines count (- 1)))
-          csr-pem-without-boundary (str/join "\n" lines)]
-      (.decode  (Base64/getMimeDecoder) csr-pem-without-boundary))))
+  [trust-store-path domain-alias domain-name]
+  (let [dir (.toString (.getParent trust-store-path))
+        fname (.toString (.getFileName trust-store-path))]
+    (with-sh-dir dir
+      (let [{:keys [out]} (sh "keytool" "-certreq" "-storepass" "changeit"
+                              "-keystore" fname "-alias" domain-alias
+                              "-ext" (str "SAN=dns:" domain-name) "-keypass" "changeit")
+            lines (into [] (.split out "\n"))
+            lines (subvec lines 1 (-> lines count (- 1)))
+            csr-pem-without-boundary (str/join "\n" lines)]
+        (.decode  (Base64/getMimeDecoder) csr-pem-without-boundary)))))
 
 (defn get-key-pair
   [keystore alias password]
-  (let[ key (.getKey  keystore alias (.toCharArray password))
+  (let[key (.getKey  keystore alias (.toCharArray password))
        cert (.getCertificate keystore alias)
        publicKey (.getPublicKey cert)]
     (KeyPair. publicKey key)))
 
 (defn load-key-store
-  [ keystoreFile
+  [keystoreFile
    password ]
   (let [keystoreUri  (.toUri keystoreFile)
         keystoreUrl  (.toURL keystoreUri)
@@ -59,10 +72,6 @@
     (with-open [is  (.openStream keystoreUrl)]
       (.load keystore is (when password  (.toCharArray password))))
     keystore))
-
-(defn get-path [first & rest]
-  (Paths/get first
-             (into-array String rest)))
 
 (defn base64[src]
   (let [encoded (.encode (.withoutPadding (Base64/getUrlEncoder)) src)
@@ -282,7 +291,8 @@
              :jwk jwk}))))
 
 (defn update-txt-record[dns-name txt-value]
-  (sh "python3" "/home/mreilly/r53.py" dns-name txt-value))
+  (let [change-id (.upsertTxtRecord r53 dns-name txt-value)]
+    (.waitForChange r53 change-id)))
 
 (defn validate-dns
   "satisfy dns challenge for the authorization"
@@ -330,19 +340,23 @@
              :alg "RS256"
              :jwk jwk}))))
 
-(defn do-everything[]
-  (let [contact ["mailto:mreilly@munichre.digital"]
-        domains ["api.ais-dev.mreilly.munichre.cloud"]
-        _ (create-key-store "/home/mreilly/wa/mr-acme/pg3"
-                      "keystore.p12")
-        csr (get-csr  "/home/mreilly/wa/mr-acme/pg3"
-                      "keystore.p12"
-                      "domain-key")
+
+
+
+
+(defn do-everything[r53 contact-email domain trust-store-filename]
+  (let [contacts [contact-email]
+        domains [domain]
+        trust-store-path (get-path trust-store-filename)
+        _ (create-key-store trust-store-path domain-name)
+        csr (get-csr  trust-store-path 
+                      "domain-key"
+                      domain-name)
         well-known-dir "/var/www/challenges/"
         private-key (.getPrivate
                      (get-key-pair
                       (load-key-store
-                       (get-path "/home/mreilly/wa/mr-acme/pg3/keystore.p12")
+                       trust-store-path
                        "changeit")
                       "account-key" "changeit"))
         jwk (to-json-web-key private-key)
@@ -356,8 +370,8 @@
         _ (println (if (= 201 (:status-code account))
                      "Registered!"
                      "Already registered!"))
-        account (if contact
-                  (update-contact account-headers jwk directory contact private-key)
+        account (if contacts
+                  (update-contact account-headers jwk directory contacts private-key)
                   account)
 
         order-resp (new-order account-headers private-key directory domains jwk)
@@ -398,4 +412,4 @@
 
 ;;(do-everything)
 
-(defn create-hello-fn [mr-acme] (.howdy mr-acme))
+
